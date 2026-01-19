@@ -156,7 +156,7 @@
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl p-8 max-sm w-full">
                                 <h3 className="text-xl font-bold mb-6">管理員驗證</h3>
-                                <input type="password" id="pw" className="w-full border p-4 rounded-xl mb-4" placeholder="請輸入密碼 2026" />
+                                <input type="password" id="pw" className="w-full border p-4 rounded-xl mb-4" placeholder="請輸入存取密碼" />
                                 <button onClick={() => {
                                     if(document.getElementById('pw').value === ADMIN_PASSWORD) { setIsAdminAuth(true); setIsModalOpen(false); setView('admin'); }
                                     else alert('密碼錯誤');
