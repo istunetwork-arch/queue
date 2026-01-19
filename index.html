@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>即時排隊系統 2026</title>
+    <!-- 引入外部資源 (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .animate-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        [data-lucide] { display: inline-block; vertical-align: middle; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-900">
+    <div id="root"></div>
+
+    <!-- Firebase SDK 初始化模組 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getFirestore, collection, doc, addDoc, onSnapshot, updateDoc, deleteDoc, serverTimestamp, query, orderBy } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+
+        // 您的 Firebase 配置 (已自動填入)
+        const firebaseConfig = {
+          apiKey: "AIzaSyBnqNTxEAVswRani5cTs5jaai-1w9CdmGA",
+          authDomain: "queue-system-2026.firebaseapp.com",
+          projectId: "queue-system-2026",
+          storageBucket: "queue-system-2026.firebasestorage.app",
+          messagingSenderId: "345972402078",
+          appId: "1:345972402078:web:355a5d83eec370d130d88f"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // 將 Firebase 方法掛載到 window 供 React 使用
+        window.fb = { auth, db, collection, doc, addDoc, onSnapshot, updateDoc, deleteDoc, serverTimestamp, query, orderBy };
+    </script>
+
+    <!-- React 應用程式 -->
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const ADMIN_PASSWORD = "2026";
+        const APP_PATH = "main_system"; // 資料存放路徑識別
+
+        // 圖示組件
+        const Icon = ({ name, size = 18, className = "" }) => {
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
+            return <i data-lucide={name} style={{ width: size, height: size }} className={className}></i>;
+        };
+
+        const formatDuration = (start, end) => {
+            if (!start || !end) return "--";
+            const diff = end.toMillis() - start.toMillis();
+            const mins = Math.floor(diff / 60000);
+            return mins < 1 ? "不到 1 分鐘" : `${mins} 分鐘`;
+        };
+
+        // --- 子組件：密碼鎖定彈窗 ---
+        const PasswordModal = ({ isOpen, onVerify, onClose }) => {
+            const [input, setInput] = useState('');
+            const [error, setError] = useState(false);
+            if (!isOpen) return null;
+
+            const handleLogin = () => {
+                if (input === ADMIN_PASSWORD) {
+                    onVerify();
+                    setInput('');
+                    setError(false);
+                } else {
+                    setError(true);
+                    setInput('');
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 animate-in">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-xl font-bold flex items-center gap-2 text-slate-800">
+                                <Icon name="lock" className="text-blue-600" /> 管理員驗證
+                            </h3>
+                            <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><Icon name="x" /></button>
+                        </div>
+                        <input 
+                            autoFocus
+                            type="password" 
+                            className={`w-full border-2 rounded-2xl px-5 py-4 mb-2 outline-none transition-all ${error ? 'border-red-500 ring-4 ring-red-50' : 'border-slate-100 focus:border-blue-500'}`}
+                            placeholder="請輸入存取密碼"
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+                        />
+                        {error && <p className="text-red-500 text-sm font-bold mb-4 text-center">密碼錯誤</p>}
+                        <button 
+                            onClick={handleLogin}
+                            className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-transform"
+                        >確認進入</button>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 子組件：桌長管理端 ---
+        const AdminView = ({ tables, queue, onAddTable, onDeleteTable, onComplete, onLogout }) => {
+            const [name, setName] = useState('');
+            const waiting = queue.filter(e => e.status === 'waiting');
+            const history = useMemo(() => queue.filter(e => e.status === 'completed').sort((a,b) => (b.completedAt?.seconds || 0) - (a.completedAt?.seconds || 0)), [queue]);
+
+            return (
+                <div className="space-y-8 animate-in">
+                    <div className="flex justify-between items-center bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                        <div>
+                            <h2 className="text-2xl font-black text-slate-800">管理控制台</h2>
+                            <p className="text-sm text-slate-500">當前共有 {waiting.length} 人正在排隊</p>
+                        </div>
+                        <button onClick={onLogout} className="flex items-center gap-2 px-4 py-2 text-red-600 font-bold border border-red-100 rounded-xl hover:bg-red-50 transition-colors">
+                            <Icon name="log-out" size={18}/> 登出鎖定
+                        </button>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                        <h3 className="font-bold mb-4 flex items-center gap-2 text-slate-700"><Icon name="plus-circle" /> 新增桌號</h3>
+                        <div className="flex gap-2">
+                            <input 
+                                className="flex-1 px-4 border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-blue-50 transition-all" 
+                                placeholder="例如：1 號桌、面談 A 區" 
+                                value={name} 
+                                onChange={e => setName(e.target.value)} 
+                            />
+                            <button 
+                                onClick={() => { if(name.trim()) { onAddTable(name.trim()); setName(''); } }}
+                                className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-900 transition-colors"
+                            >新增</button>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {tables.map(t => {
+                            const tableQueue = waiting.filter(e => e.tableId === t.id);
+                            return (
+                                <div key={t.id} className="bg-white rounded-2xl border border-slate-200 shadow-md overflow-hidden">
+                                    <div className="bg-slate-50 p-4 border-b flex justify-between items-center">
+                                        <span className="font-bold text-slate-800">{t.name}</span>
+                                        <button onClick={() => onDeleteTable(t.id)} className="text-slate-300 hover:text-red-500 transition-colors"><Icon name="trash-2" size={18}/></button>
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        {tableQueue.length === 0 ? <p className="text-center text-slate-400 py-6 italic text-sm">目前此桌無人排隊</p> : 
+                                            tableQueue.map((e, idx) => (
+                                                <div key={e.id} className="flex justify-between items-center bg-blue-50/50 p-4 rounded-xl border border-blue-100 animate-in">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="bg-blue-600 text-white text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full">{idx+1}</span>
+                                                        <div>
+                                                            <p className="font-bold text-slate-700">{e.studentName}</p>
+                                                            <p className="text-[10px] text-slate-400">{e.createdAt?.toDate().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
+                                                        </div>
+                                                    </div>
+                                                    {idx === 0 && (
+                                                        <button 
+                                                            onClick={() => onComplete(e.id)} 
+                                                            className="bg-green-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-600 transition-colors"
+                                                        >完成</button>
+                                                    )}
+                                                </div>
+                                            ))
+                                        }
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="bg-slate-800 p-4 flex items-center gap-2 text-white font-bold"><Icon name="history" size={18} /> 最近完成紀錄</div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left">
+                                <thead className="bg-slate-50 border-b">
+                                    <tr className="text-slate-500 text-xs font-bold uppercase tracking-wider">
+                                        <th className="p-4">學生姓名</th>
+                                        <th className="p-4">桌號</th>
+                                        <th className="p-4">等待＋服務時間</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {history.length === 0 && <tr><td colSpan="3" className="p-8 text-center text-slate-400">尚無歷史紀錄</td></tr>}
+                                    {history.slice(0, 10).map(e => (
+                                        <tr key={e.id} className="text-sm hover:bg-slate-50 transition-colors">
+                                            <td className="p-4 font-bold text-slate-700">{e.studentName}</td>
+                                            <td className="p-4 text-slate-500">{tables.find(t => t.id === e.tableId)?.name || '已刪除'}</td>
+                                            <td className="p-4 text-green-600 font-bold italic">{formatDuration(e.createdAt, e.completedAt)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 子組件：學生登記端 ---
+        const StudentView = ({ tables, queue, onJoin }) => {
+            const [name, setName] = useState('');
+            const [selectedId, setSelectedId] = useState('');
+            const waiting = queue.filter(e => e.status === 'waiting');
+
+            return (
+                <div className="max-w-md mx-auto space-y-6 animate-in">
+                    <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-slate-100">
+                        <h2 className="text-3xl font-black text-slate-800 mb-8 text-center tracking-tight">領取號碼牌</h2>
+                        <div className="space-y-6">
+                            <div>
+                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 block ml-1">您的姓名</label>
+                                <input 
+                                    className="w-full border-2 border-slate-100 rounded-2xl px-6 py-4 text-lg focus:border-blue-500 focus:ring-4 focus:ring-blue-50 outline-none transition-all placeholder:text-slate-200"
+                                    placeholder="請輸入姓名"
+                                    value={name}
+                                    onChange={e => setName(e.target.value)}
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 block ml-1">請選擇報到桌號</label>
+                                <div className="grid grid-cols-1 gap-3">
+                                    {tables.length === 0 && <div className="p-6 border-2 border-dashed rounded-2xl text-center text-slate-300">尚未開放登記</div>}
+                                    {tables.map(t => {
+                                        const count = waiting.filter(e => e.tableId === t.id).length;
+                                        const isSelected = selectedId === t.id;
+                                        return (
+                                            <button 
+                                                key={t.id} 
+                                                onClick={() => setSelectedId(t.id)}
+                                                className={`p-5 rounded-2xl border-2 text-left flex justify-between items-center transition-all ${isSelected ? 'border-blue-500 bg-blue-50 ring-4 ring-blue-50' : 'border-slate-50 bg-slate-50 hover:border-slate-200'}`}
+                                            >
+                                                <div>
+                                                    <span className={`block font-bold text-lg ${isSelected ? 'text-blue-700' : 'text-slate-700'}`}>{t.name}</span>
+                                                    <span className="text-xs text-slate-500 font-medium flex items-center gap-1"><Icon name="users" size={12}/> 前方等待 {count} 人</span>
+                                                </div>
+                                                {isSelected ? <div className="bg-blue-600 p-1 rounded-full text-white"><Icon name="check" size={16}/></div> : <Icon name="chevron-right" className="text-slate-300" />}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            <button 
+                                disabled={!name.trim() || !selectedId}
+                                onClick={() => { onJoin(name.trim(), selectedId); setName(''); setSelectedId(''); }}
+                                className={`w-full py-5 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 ${(!name.trim() || !selectedId) ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-blue-200'}`}
+                            >確認登記</button>
+                        </div>
+                    </div>
+                    <p className="text-center text-slate-400 text-sm">登記完成後請依叫號前往桌次</p>
+                </div>
+            );
+        };
+
+        // --- 主程式進入點 ---
+        function App() {
+            const [view, setView] = useState('student');
+            const [isAdminAuth, setIsAdminAuth] = useState(false);
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [user, setUser] = useState(null);
+            const [tables, setTables] = useState([]);
+            const [queue, setQueue] = useState([]);
+
+            const FB = window.fb;
+
+            useEffect(() => {
+                if (!FB) return;
+                FB.signInAnonymously(FB.auth).catch(console.error);
+                return FB.onAuthStateChanged(FB.auth, setUser);
+            }, []);
+
+            useEffect(() => {
+                if (!user || !FB) return;
+                const pathTables = FB.collection(FB.db, 'artifacts', APP_PATH, 'public', 'data', 'tables');
+                const pathQueue = FB.collection(FB.db, 'artifacts', APP_PATH, 'public', 'data', 'queue');
+
+                const unsubT = FB.onSnapshot(pathTables, (snap) => setTables(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+                const unsubQ = FB.onSnapshot(pathQueue, (snap) => {
+                    const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setQueue(list.sort((a,b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)));
+                });
+                return () => { unsubT(); unsubQ(); };
+            }, [user]);
+
+            const handleJoin = async (name, tableId) => {
+                await FB.addDoc(FB.collection(FB.db, 'artifacts', APP_PATH, 'public', 'data', 'queue'), {
+                    studentName: name, tableId, status: 'waiting', createdAt: FB.serverTimestamp(), completedAt: null
+                });
+                alert('登記成功！');
+            };
+
+            const handleAddTable = async (name) => {
+                await FB.addDoc(FB.collection(FB.db, 'artifacts', APP_PATH, 'public', 'data', 'tables'), { name, createdAt: FB.serverTimestamp() });
+            };
+
+            const handleDeleteTable = async (id) => {
+                await FB.deleteDoc(FB.doc(FB.db, 'artifacts', APP_PATH, 'public', 'data', 'tables', id));
+            };
+
+            const handleComplete = async (id) => {
+                await FB.updateDoc(FB.doc(FB.db, 'artifacts', APP_PATH, 'public', 'data', 'queue', id), {
+                    status: 'completed', completedAt: FB.serverTimestamp()
+                });
+            };
+
+            if (!user) return (
+                <div className="flex flex-col items-center justify-center min-h-screen gap-6 bg-white">
+                    <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                    <div className="text-center">
+                        <p className="font-black text-2xl text-slate-800">雲端連線中</p>
+                        <p className="text-slate-400 text-sm mt-1">正在初始化排隊伺服器...</p>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="pb-20">
+                    <header className="max-w-4xl mx-auto flex justify-between items-center my-6 bg-white/80 backdrop-blur-md p-3 rounded-2xl shadow-sm border border-slate-200 sticky top-4 z-40 mx-4 md:mx-auto">
+                        <div className="flex items-center gap-3 px-4">
+                            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-200"><Icon name="layers" size={16}/></div>
+                            <span className="font-black text-xl text-slate-800 tracking-tight">排隊系統 2026</span>
+                        </div>
+                        <div className="flex bg-slate-100 rounded-xl p-1">
+                            <button onClick={() => setView('student')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${view === 'student' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>學生端</button>
+                            <button onClick={() => isAdminAuth ? setView('admin') : setIsModalOpen(true)} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${view === 'admin' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>桌長端</button>
+                        </div>
+                    </header>
+
+                    <PasswordModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onVerify={() => { setIsAdminAuth(true); setIsModalOpen(false); setView('admin'); }} />
+
+                    <main className="max-w-4xl mx-auto px-4">
+                        {view === 'student' ? (
+                            <StudentView tables={tables} queue={queue} onJoin={handleJoin} />
+                        ) : (
+                            <AdminView tables={tables} queue={queue} onAddTable={handleAddTable} onDeleteTable={handleDeleteTable} onComplete={handleComplete} onLogout={() => { setIsAdminAuth(false); setView('student'); }} />
+                        )}
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
