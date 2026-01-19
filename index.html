@@ -60,6 +60,13 @@
             return <i data-lucide={name} style={{ width: size, height: size }} className={className}></i>;
         };
 
+        const formatDuration = (start, end) => {
+            if (!start || !end) return "--";
+            const diff = end.toMillis() - start.toMillis();
+            const mins = Math.floor(diff / 60000);
+            return mins < 1 ? "不到 1 分鐘" : `${mins} 分鐘`;
+        };
+
         function App() {
             const [view, setView] = useState('student');
             const [isAdminAuth, setIsAdminAuth] = useState(false);
@@ -105,9 +112,25 @@
                 return () => { unsubT(); unsubQ(); };
             }, [user, isReady]);
 
+            // 計算歷史紀錄
+            const history = useMemo(() => 
+                queue.filter(e => e.status === 'completed')
+                    .sort((a, b) => (b.completedAt?.seconds || 0) - (a.completedAt?.seconds || 0))
+            , [queue]);
+
             const handleJoin = async () => {
                 if (!studentName.trim()) { alert('請輸入您的姓名'); return; }
                 if (!selectedTableId) { alert('請選擇一個桌號'); return; }
+                
+                // --- 檢查姓名比對 (正在排隊中不能重複登記) ---
+                const isAlreadyWaiting = queue.some(e => 
+                    e.studentName.trim() === studentName.trim() && e.status === 'waiting'
+                );
+                
+                if (isAlreadyWaiting) {
+                    alert(`「${studentName}」同學，您已經在排隊名單中囉，請勿重複登記！`);
+                    return;
+                }
                 
                 try {
                     await window.fb.addDoc(window.fb.collection(window.fb.db, 'artifacts', APP_PATH, 'public', 'data', 'queue'), {
@@ -238,18 +261,20 @@
                                 </div>
                             </div>
                         ) : (
-                            <div className="space-y-6">
+                            <div className="space-y-8">
                                 <div className="bg-white p-6 rounded-2xl flex justify-between items-center shadow-sm border border-slate-200">
                                     <h2 className="text-2xl font-bold text-slate-800">管理後台</h2>
                                     <button onClick={()=>{setIsAdminAuth(false); setView('student');}} className="text-red-500 font-bold border border-red-50 rounded-xl px-4 py-2 hover:bg-red-50 transition-colors">登出系統</button>
                                 </div>
+                                
                                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                                    <h3 className="font-bold mb-4 text-slate-700">新增排隊桌次</h3>
+                                    <h3 className="font-bold mb-4 text-slate-700 flex items-center gap-2"><Icon name="plus-circle" size={18}/> 新增排隊桌次</h3>
                                     <div className="flex gap-2">
                                         <input id="tname" className="flex-1 border-2 border-slate-100 rounded-xl px-4 py-3 outline-none focus:border-blue-500" placeholder="例如：面試 A 區" />
                                         <button onClick={()=>{const n=document.getElementById('tname').value; if(n){handleAddTable(n); document.getElementById('tname').value='';}}} className="bg-slate-800 text-white px-8 rounded-xl font-bold hover:bg-slate-900 transition-colors">新增</button>
                                     </div>
                                 </div>
+                                
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     {tables.map(t => (
                                         <div key={t.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -272,6 +297,34 @@
                                             </div>
                                         </div>
                                     ))}
+                                </div>
+
+                                {/* --- 復原：歷史紀錄區塊 --- */}
+                                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                                    <div className="bg-slate-800 p-4 flex items-center gap-2 text-white font-bold">
+                                        <Icon name="history" size={18} /> 最近完成紀錄
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left">
+                                            <thead className="bg-slate-50 border-b">
+                                                <tr className="text-slate-500 text-xs font-bold uppercase tracking-wider">
+                                                    <th className="p-4">學生姓名</th>
+                                                    <th className="p-4">桌號</th>
+                                                    <th className="p-4">服務耗時</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {history.length === 0 && <tr><td colSpan="3" className="p-8 text-center text-slate-400 italic">尚無歷史紀錄</td></tr>}
+                                                {history.slice(0, 10).map(e => (
+                                                    <tr key={e.id} className="text-sm hover:bg-slate-50 transition-colors">
+                                                        <td className="p-4 font-bold text-slate-700">{e.studentName}</td>
+                                                        <td className="p-4 text-slate-500">{tables.find(t => t.id === e.tableId)?.name || '已刪除桌次'}</td>
+                                                        <td className="p-4 text-green-600 font-bold">{formatDuration(e.createdAt, e.completedAt)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
                                 </div>
                             </div>
                         )}
